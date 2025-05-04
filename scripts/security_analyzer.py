@@ -20,6 +20,8 @@ class SecurityAnalyzer:
         self.check_hardcoded_secrets()
         self.check_insecure_random()
         self.check_logging()
+        self.check_code_obfuscation()
+        self.check_debug_flags()
         
         return self.issues
     
@@ -123,6 +125,11 @@ class SecurityAnalyzer:
             for file in files:
                 if file.endswith(".java"):
                     file_path = os.path.join(root, file)
+                    
+                    # skip library code
+                    if "com/google/" in file_path or "androidx/" in file_path:
+                        continue
+                        
                     try:
                         with open(file_path, 'r', encoding='utf-8') as f:
                             content = f.read()
@@ -149,6 +156,11 @@ class SecurityAnalyzer:
             for file in files:
                 if file.endswith(".java"):
                     file_path = os.path.join(root, file)
+                    
+                    # skip library code
+                    if "com/google/" in file_path or "androidx/" in file_path:
+                        continue
+                        
                     try:
                         with open(file_path, 'r', encoding='utf-8') as f:
                             content = f.read()
@@ -173,6 +185,11 @@ class SecurityAnalyzer:
             for file in files:
                 if file.endswith(".java"):
                     file_path = os.path.join(root, file)
+                    
+                    # skip library code
+                    if "com/google/" in file_path or "androidx/" in file_path:
+                        continue
+                        
                     try:
                         with open(file_path, 'r', encoding='utf-8') as f:
                             content = f.read()
@@ -187,6 +204,108 @@ class SecurityAnalyzer:
                                     })
                     except:
                         continue
+                        
+    def check_code_obfuscation(self):
+        # signs of obfuscation
+        obfuscation_patterns = [
+            (r'Class\s+[a-z]{1,2}(?:\$[a-z]{1,2})*\s*(?:extends|implements)', "Short class names"),
+            (r'(?:public|private|protected)\s+[a-z]{1,2}\s*\(', "Short method names"),
+            (r'String\.fromCharCode\(.*?\)', "Character code obfuscation"),
+            (r'new\s+String\s*\(\s*new\s+byte\[\]', "Byte array string construction"),
+            (r'(?:Class\.forName|ClassLoader|loadClass|defineClass)\s*\(', "Dynamic class loading"),
+            (r'(?:getDeclaredMethod|getMethod)\s*\([^)]*\)\.invoke\(', "Reflection usage"),
+            (r'dexClassLoader|dalvik\.system\.DexClassLoader', "Runtime code loading"),
+            (r'Cipher\s*\.\s*getInstance\s*\([^)]*\)', "Custom encryption")
+        ]
+        
+        # obfuscation techniques
+        obfuscation_counts = {}
+        for _, technique in obfuscation_patterns:
+            obfuscation_counts[technique] = 0
+            
+        for root, _, files in os.walk(self.java_dir):
+            for file in files:
+                if file.endswith(".java"):
+                    file_path = os.path.join(root, file)
+                    
+                    # skip library code
+                    if "com/google/" in file_path or "androidx/" in file_path:
+                        continue
+                        
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                            
+                            for pattern, technique in obfuscation_patterns:
+                                matches = re.findall(pattern, content)
+                                if matches:
+                                    obfuscation_counts[technique] += len(matches)
+                                    
+                                    if len(matches) > 0:
+                                        self.issues.append({
+                                            "type": "Code Obfuscation",
+                                            "severity": "INFO",
+                                            "description": f"Potential {technique} detected ({len(matches)} occurrences)",
+                                            "location": file_path
+                                        })
+                    except:
+                        continue
+                        
+        # summary of obfuscation findings
+        total_obfuscation = sum(obfuscation_counts.values())
+        if total_obfuscation > 10:
+            self.issues.append({
+                "type": "Code Obfuscation",
+                "severity": "MEDIUM",
+                "description": f"App appears to be heavily obfuscated with {total_obfuscation} obfuscation techniques detected",
+                "location": "Multiple files"
+            })
+    
+    def check_debug_flags(self):
+        if not os.path.exists(self.manifest_path):
+            return
+            
+        try:
+            tree = ET.parse(self.manifest_path)
+            root = tree.getroot()
+            
+            # Check debuggable flag
+            debuggable = root.find(".//application[@android:debuggable='true']", 
+                               {"android": "http://schemas.android.com/apk/res/android"})
+            
+            if debuggable is not None:
+                self.issues.append({
+                    "type": "Debug Flag",
+                    "severity": "HIGH",
+                    "description": "App is debuggable in production build",
+                    "location": "AndroidManifest.xml"
+                })
+                
+            # check for StrictMode
+            for root_dir, _, files in os.walk(self.java_dir):
+                for file in files:
+                    if file.endswith(".java"):
+                        file_path = os.path.join(root_dir, file)
+                        
+                        # skip library code
+                        if "com/google/" in file_path or "androidx/" in file_path:
+                            continue
+                            
+                        try:
+                            with open(file_path, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                                
+                                if "StrictMode" in content and "enableDefaults" in content:
+                                    self.issues.append({
+                                        "type": "Debug Flag",
+                                        "severity": "MEDIUM",
+                                        "description": "StrictMode is enabled in potentially production code",
+                                        "location": file_path
+                                    })
+                        except:
+                            continue
+        except:
+            pass
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze decompiled APK for security issues")
